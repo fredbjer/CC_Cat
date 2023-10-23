@@ -4,23 +4,22 @@ import json
 import glob
 import gzip
 import pickle
-import signal
+import shutil
 import timeit
-import datetime
 import fasttext
+import traceback
 import functools
-# import traceback
 
 from tqdm import tqdm
 from tld import get_fld
-from utils import Colorful
+from utils import Colorful, now
 from trafilatura import extract
 from multiprocessing import Pool
 from collections import defaultdict, namedtuple
 from warcio.archiveiterator import ArchiveIterator
-# from fastwarc.warc import ArchiveIterator, WarcRecordType
-# from fastwarc.stream_io import FileStream, GZipStream
 from langdetect import detect, LangDetectException
+# from fastwarc.stream_io import FileStream, GZipStream
+# from fastwarc.warc import ArchiveIterator, WarcRecordType
 
 
 class Counter:
@@ -70,32 +69,36 @@ class Counter:
         return self
 
     def __report__(self):
-        print(colorful.timer(self.start))
-        print(colorful.blue(f'{"PDF files":^20}: `{self.pdf:>10,d}` || rate: `{self.pdf / self.total:.5f}`'))
-        print(colorful.blue(f'{"XML files":^20}: `{self.xml:>10,d}` || rate: `{self.xml / self.total:.5f}`'))
-        print(colorful.blue(f'{"JSON files":^20}: `{self.json:>10,d}` || rate: `{self.json / self.total:.5f}`'))
-        print(colorful.blue(f'{"IMAGE files":^20}: `{self.image:>10,d}` || rate: `{self.image / self.total:.5f}`'))
-        print(colorful.blue(f'{"VIDEO files":^20}: `{self.video:>10,d}` || rate: `{self.video / self.total:.5f}`'))
-        print(colorful.blue(f'{"Octet-Stream files":^20}: `{self.octet_stream:>10,d}` || rate: `{self.octet_stream / self.total:.5f}`'))
-        print(colorful.green(f'{"Total process":^20}: `{self.total:>10,d}`'))
-        print(colorful.blue(f'{"domain pass":^20}: `{self.domain_pass:>10,d}` || rate: `{self.domain_pass / self.total:.5f}`'))
-        print(colorful.blue(f'{"adult regex pass":^20}: `{self.adult_re_pass:>10,d}` || rate: `{self.adult_re_pass / self.total:.5f}`'))
-        print(colorful.blue(f'{"content extract pass":^20}: `{self.trafilatura_pass:>10,d}` || rate: `{self.trafilatura_pass / self.total:.5f}`'))
-        print(colorful.blue(f'{"lang detect pass":^20}: `{self.lang_detection_pass:>10,d}` || rate: `{self.lang_detection_pass / self.total:.5f}`'))
+        if not self.total:
+            return
+        tqdm.write(colorful.timer(self.start))
+        tqdm.write(colorful.blue(f'{"PDF files":^20}: `{self.pdf:>10,d}` || rate: `{self.pdf / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"XML files":^20}: `{self.xml:>10,d}` || rate: `{self.xml / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"JSON files":^20}: `{self.json:>10,d}` || rate: `{self.json / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"IMAGE files":^20}: `{self.image:>10,d}` || rate: `{self.image / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"VIDEO files":^20}: `{self.video:>10,d}` || rate: `{self.video / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"Octet-Stream files":^20}: `{self.octet_stream:>10,d}` || rate: `{self.octet_stream / self.total:.5f}`'))
+        tqdm.write(colorful.green(f'{"Total process":^20}: `{self.total:>10,d}`'))
+        tqdm.write(colorful.blue(f'{"domain pass":^20}: `{self.domain_pass:>10,d}` || rate: `{self.domain_pass / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"adult regex pass":^20}: `{self.adult_re_pass:>10,d}` || rate: `{self.adult_re_pass / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"content extract pass":^20}: `{self.trafilatura_pass:>10,d}` || rate: `{self.trafilatura_pass / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"lang detect pass":^20}: `{self.lang_detection_pass:>10,d}` || rate: `{self.lang_detection_pass / self.total:.5f}`'))
         black_hit = self.unknown + self.useful
-        print(colorful.green(f'{"Normal domains":^20}: `{self.normal:>10,d}` || rate: `{self.normal / self.total:.5f}`'))
-        print(colorful.blue(f'{"Total hit blacklist":^20}: `{black_hit:>10,d}` || rate: `{black_hit / self.total:.5f}`'))
-        print(colorful.blue(f'{"hit `useful`":^20}: `{self.useful:>10,d}` || rate: `{self.useful / self.total:.5f}`'))
-        print(colorful.blue(f'{"hit `unknown`":^20}: `{self.unknown:>10,d}` || rate: `{self.unknown / self.total:.5f}`'))
-        print(colorful.blue(self.language.__str__()))
+        tqdm.write(colorful.green(f'{"Normal domains":^20}: `{self.normal:>10,d}` || rate: `{self.normal / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"Total hit blacklist":^20}: `{black_hit:>10,d}` || rate: `{black_hit / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"hit `useful`":^20}: `{self.useful:>10,d}` || rate: `{self.useful / self.total:.5f}`'))
+        tqdm.write(colorful.blue(f'{"hit `unknown`":^20}: `{self.unknown:>10,d}` || rate: `{self.unknown / self.total:.5f}`'))
+        tqdm.write(colorful.blue(self.language.__str__()))
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if not exc_type and not exc_val and not exc_tb:
-            if not hasattr(self, 'bar'):
-                self.bar = tqdm
             if not hasattr(self, 'file'):
                 self.file = ''
-            self.bar.write(colorful.green(f'Successful finished `{self.file}` at `{datetime.datetime.now()}`'))
+            tqdm.write(colorful.green(f'Successful finished `{self.file}` at `{now()}`'))
+            os.makedirs('done', exist_ok=True)
+            shutil.move(os.path.dirname(self.file), 'done')
+        else:
+            tqdm.write(colorful.yellow(f'Subprocess exited on `{self.file}`'))
 
 
 def load_blacklist(path):
@@ -194,22 +197,13 @@ def save_items(arrows, frag, counter):
         pickle.dump(counter, f)
 
 
-def load_index(path):
-    with open(path, 'r') as f:
-        lines = f.readlines()
-    return lines
-
-
 def tracer(func):
     @functools.wraps(func)
     def wrapper(frag):
         try:
-            func(frag)
+            return func(frag)
         except Exception as e:
-            print(e, colorful.red(f'subprocess exited on `{frag}`'))
-            # for t in traceback.format_exception(e, limit=-1):
-            #     print(colorful.green(t[:-2]))
-            os.killpg(os.getpgid(os.getgid()), signal.SIGKILL)
+            tqdm.write(colorful.green(''.join(traceback.format_exception(e, limit=-1))))
     return wrapper
 
 
@@ -219,7 +213,6 @@ def warc_extract(frag):
     # import fsspec
     # with fsspec.open('https://data.commoncrawl.org/' + frag, 'rb', compression='gzip') as stream
     with Counter() as counter, tqdm(desc=colorful.blue(frag), colour='GREEN', position=0) as bar:
-        setattr(counter, 'bar', bar)
         for file in glob.glob(f'CC/{frag}/*.warc.gz'):
             setattr(counter, 'file', file)
             for record in ArchiveIterator(gzip.open(file, 'r')):
